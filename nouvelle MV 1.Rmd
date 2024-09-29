@@ -2,5 +2,244 @@
 title: "R Notebook"
 output: github_document
 ---
-####essai numéro 1
+####essai numéro 1 pour enregistrer dans github + recherche du working directory
+```{r}
+getwd()
+```
+####install Bioconducteur#########
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(version="3.19")
+```
+####install bioconducteur version 3.18 car elle est plus adapté à ma version rstudio
+```{r}
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(version="3.18")
+```
+####il est déjà installer donc on vas continuer
+####lire dada2####
+```{r}
+library(dada2)
+```
+####installation de Rcpp pour pouvoir continuer avec DADA2
+```{r}
+install.packages("Rcpp")
+```
+####il faut lire Rcpp pour pouvoir travailler avec
+```{r}
+library(Rcpp)
+```
+####on va lire dada2 pour travailler avec
+```{r}
+library(dada2)
+```
+####getting ready :chnager le directory vers celui contenant les fichiers fastq unziper pour pouvoir travailler (on a choisi le chemin des files unzipé)
+```{r}
+path <- "/home/rstudio/dada2-avec-la-nouvelle-MV/MiSeq_SOP"
+list.files(path)
+```
+####pour installer le fichier j'ai fais upload et choisir le fichier
+####en dessus ce sont les noms des fichiers que je travaillerais avec
+# c'est une explication dans le tuto du format du nom des fichiers : Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+# puis on vas créer un objet qui s'appelle sample.names qui vas contenir le nom des echantillons : Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+```{r}
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+```
+####on vas lui demander de cité le noms des échantillons qu'il a extrait du nom du fichier
+```{r}
+sample.names
+```
+#####ce sont les noms des echantillons
+#####Inspect read quality profiles
+#### on demande de voire le profile de qualité par des plots (schéma)
+####pour les séquences forword :
+```{r}
+plotQualityProfile(fnFs[1:2])
+```
+####pour les séquences reverse maintenant on va faire la meme chose
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+####filter and trim######
+####attribuer les noms de fichiers aux fichiers filtrés
+####on va filtrer les files, on va enlever toutes les sequences de mauvaise qualité (le bruit)
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+####en dessous pour creer un nouveau objet dans lequelle il y a les sequences de bonnes qualité uniquement pour pouvoir travailler avec
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=TRUE) # On Windows set multithread=FALSE
+head(out)
+```
+#####learn the error rates######
+####il vas prendre en compte les frequence d'erreur dans les sequences pour dessider si c'est une vraie séquence si elle est tres frequente ou si elle est une erreur si elle n'est pas asser frequente
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+####visualiser les taux d'erreur estimés sous forme de plot
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+```
+####on va faire la meme chose pour la sequence reverse
+```{r}
+plotErrors(errR, nominalQ=TRUE)
+```
+####sample inference####
+####appliquer l'algorithme d'inférence d'échantillon de base aux données de séquence filtrées et découpées
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+```
+#### explication pour sample 1 explication :pour forward, sur 7113 seq retrouver;il y a 1979 considerer comme sequence uniques
+```{r}
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+```
+#### explication pour sample 1 explication :pour reverse, sur 7113 seq retrouver;il y a 1660 considerer comme sequence uniques
+####Inspecting the returned dada-class object####
+####description du 1 ere fichier dans dadaFs
+```{r}
+dadaFs[[1]]
+```
+####merge paired reads####
+####le but est de rassembler les seauences, par exemple au lieu d'avoir 2 fichier pour sample one : un pour forword et un pour reverse, on fait un merge pour avoir un seul fichier pour sample one contenant forword et reverse
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+```
+####Construct sequence table####
+#### dans le tableau il y a 20 colone pour 20 echantillon et les 293 sont les ASV (variant de sequence d'amplicon
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+```
+####inspecter la distribution de la longeur de la séquence
+####5 longeur de sequence et separer combien de seq font cette taille : il y a une sequnce de 251 comme taile, 88 sequence de 252 comme taile,...
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+####enlever les chimères (les fusions des sequences F et R)####
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+sum(seqtab.nochim)/sum(seqtab)
+```
+####96% de ma data est conserver, et 4% été des chimére elles ont était enlever
+####track reads through the pipeline####
+######tableau recapitulatif, cbind va venir accoler des colones à une table. il y a 6996 sequence après la corrections des erreures, pour cela ils sont moins de 7113 (les filtrer) de plus elles sont encore moins dans le fichier merged car il nécessite la presence des deux sequences pour créer le fichier, si une est absente il n'y aura pas de fichier
+####prend l'argument x et calcule le nombre total de séquences uniques, puis en faisant la somme des résultats.
+#combiner plusieurs résultats dans une matrice ou un tableau de données nommé track.
+#noms assignés pour indiquer ce que chaque colonne représente 
+#Assigner les noms des échantillons aux lignes de l'objet track
+#afficher les resultats
+#En résumé, ce code permet de suivre et de résumer le nombre de séquences à chaque étape d'une analyse de séquençage ADN, aidant à évaluer la qualité des données et l'efficacité du traitement.
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+####Assign taxonomy####
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim,"/home/rstudio/dada2-avec-la-nouvelle-MV/silva_nr99_v138.1_train_set.fa.gz?download=1", multithread=TRUE)
+```
+#expliquer : Removing sequence rownames for display only
+```{r}
+axa.print <- taxa 
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
 
+####Evaluate accuracy#####
+# Drop ASVs absent in the Mock
+```{r}
+unqs.mock <- seqtab.nochim["Mock",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE)
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+```
+#expliquer : 
+```{r}
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+#####Bonus: Handoff to phyloseq#####
+#expliquer : 
+```{r}
+library(phyloseq); packageVersion("phyloseq")
+```
+
+#expliquer : 
+```{r}
+library(Biostrings); packageVersion("Biostrings")
+```
+
+#expliquer : 
+```{r}
+library(ggplot2); packageVersion("ggplot2")
+```
+
+#expliquer : 
+```{r}
+theme_set(theme_bw())
+```
+#expliquer : 
+```{r}
+samples.out <- rownames(seqtab.nochim)
+subject <- sapply(strsplit(samples.out, "D"), `[`, 1)
+gender <- substr(subject,1,1)
+subject <- substr(subject,2,999)
+day <- as.integer(sapply(strsplit(samples.out, "D"), `[`, 2))
+samdf <- data.frame(Subject=subject, Gender=gender, Day=day)
+samdf$When <- "Early"
+samdf$When[samdf$Day>100] <- "Late"
+rownames(samdf) <- samples.out
+```
+#expliquer :  Remove mock sample
+```{r}
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxa))
+ps <- prune_samples(sample_names(ps) != "Mock", ps) 
+```
+#expliquer : 
+```{r}
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+
+#expliquer : 
+```{r}
+plot_richness(ps, x="Day", measures=c("Shannon", "Simpson"), color="When")
+```
+#expliquer : transform data to proportions as appropriate for Bray-Curtis distances
+```{r}
+ps.prop <- transform_sample_counts(ps, function(otu) otu/sum(otu))
+ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
+```
+#expliquer : 
+```{r}
+plot_ordination(ps.prop, ord.nmds.bray, color="When", title="Bray NMDS")
+```
+#expliquer : 
+```{r}
+top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+ps.top20 <- prune_taxa(top20, ps.top20)
+plot_bar(ps.top20, x="Day", fill="Family") + facet_wrap(~When, scales="free_x")
+```
+####c'est fini####
